@@ -1,3 +1,7 @@
+PRINT '>> Truncating table: silver.[[crm_sales_details]]'
+TRUNCATE TABLE [DataWarehouse].[silver].[crm_sales_details]
+PRINT '>> Inserting Data Into: silver.[[crm_sales_details]]'
+
 INSERT INTO [DataWarehouse].[silver].[crm_sales_details](
 	[sls_ord_num],
 	[sls_prd_key],

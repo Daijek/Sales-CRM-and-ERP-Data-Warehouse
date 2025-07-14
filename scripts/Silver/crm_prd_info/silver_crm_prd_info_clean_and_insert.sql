@@ -1,3 +1,7 @@
+PRINT '>> Truncating table: silver.[crm_prd_info]'
+TRUNCATE TABLE [DataWarehouse].[silver].[crm_prd_info]
+PRINT '>> Inserting Data Into: silver.[crm_prd_info]'
+
 INSERT INTO [DataWarehouse].[silver].[crm_prd_info](
 	[prd_id],
 	[cat_id],

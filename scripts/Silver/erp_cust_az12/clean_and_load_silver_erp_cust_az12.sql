@@ -1,3 +1,7 @@
+PRINT '>> Truncating table: silver.[erp_cust_az12]'
+TRUNCATE TABLE [DataWarehouse].[silver].[erp_cust_az12]
+PRINT '>> Inserting Data Into: silver.[erp_cust_az12]'
+
 INSERT INTO [DataWarehouse].[silver].[erp_cust_az12](
 	[cid],
 	[bdate],
