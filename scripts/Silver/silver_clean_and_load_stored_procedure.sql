@@ -17,6 +17,8 @@ Script Purpose:
 ==============================================================================================
 */
 
+
+
 CREATE OR ALTER PROCEDURE silver.load_silver AS
 BEGIN
 	BEGIN TRY
@@ -94,7 +96,7 @@ BEGIN
 		SELECT 
 			[prd_id],
 			REPLACE(SUBSTRING(prd_key, 1, 5), '-', '_') AS cat_id,
-			REPLACE(SUBSTRING(prd_key, 7, LEN(prd_key)-6), '-', '_') AS prd_key,
+			REPLACE(SUBSTRING(prd_key, 7, LEN(prd_key)-6), '_', '-') AS prd_key,
 			[prd_nm],
 			ISNULL([prd_cost], 0) AS prd_cost, -- Replacing Null values in product cost with 0
 			CASE TRIM(UPPER([prd_line]))
