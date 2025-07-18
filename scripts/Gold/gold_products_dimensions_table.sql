@@ -1,3 +1,9 @@
+/*IF OBJECT_ID ('gold.dim_products', 'u') IS NOT NULL
+	DROP VIEW [gold].[dim_products];*/
+
+IF EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[gold].[dim_products]'))
+    DROP VIEW [gold].[dim_products];
+GO
 CREATE VIEW [gold].[dim_products] AS
 	SELECT DISTINCT 
 		ROW_NUMBER() OVER(ORDER BY [pi].[prd_id]) AS [product_key], -- Adding surrogate key
