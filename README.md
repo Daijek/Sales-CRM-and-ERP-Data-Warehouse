@@ -1,6 +1,6 @@
 # E-commerce Sales Data Warehouse on SQL Server
 
-This project implements a complete data warehouse for an e-commerce store specializing in bikes, clothing, and accessories. It follows the **Medallion Architecture** (Bronze, Silver, Gold) using T-SQL on SQL Server to process data from CRM and ERP system exports.
+This project implements a complete data warehouse and analysis for an e-commerce store specializing in bikes, clothing, and accessories. It follows the **Medallion Architecture** (Bronze, Silver, Gold) using T-SQL on SQL Server to process data from CRM and ERP system exports.
 
 -   **Bronze Layer**: Ingests raw, unaltered data from source CSV files.
 -   **Silver Layer**: Cleans, standardizes, and enriches the data, preparing it for analytics.
@@ -358,62 +358,310 @@ LEFT JOIN gold.dim_customers AS dc ON sd.sls_cust_id = dc.customer_id
 LEFT JOIN gold.dim_products AS dp ON sd.sls_prd_key = dp.product_number;
 GO
 ```
+
+#### Report Views
+
+These views are built on the foundational models and provide pre-calculated metrics and segments for direct use in BI tools or reports.
+
+```sql
+-- File: 6b_create_report_views.sql
+USE DataWarehouse;
+GO
+
+-- Customer Report View
+CREATE OR ALTER VIEW gold.report_customers AS 
+WITH base_query AS (
+    SELECT 
+        f.order_number, f.product_key, f.order_date, f.sales_amount, f.quantity, f.customer_key,
+        c.customer_number, c.first_name + ' ' + c.last_name AS customer_name,
+        DATEDIFF(year, c.birthdate, GETDATE()) age
+    FROM gold.fact_sales f
+    LEFT JOIN gold.dim_customers c ON c.customer_key = f.customer_key
+    WHERE order_date IS NOT NULL
+), customer_aggregation AS (
+    SELECT
+        customer_key, customer_number, customer_name, age,
+        COUNT(DISTINCT order_number) AS total_orders,
+        SUM(sales_amount) AS total_sales,
+        SUM(quantity) AS total_quantity,
+        COUNT(DISTINCT product_key) AS total_products,
+        MAX(order_date) AS last_order_date,
+        DATEDIFF(month, MIN(order_date), MAX(order_date)) AS lifespan
+    FROM base_query
+    GROUP BY customer_key, customer_number, customer_name, age
+)
+SELECT
+    customer_key, customer_name, age,
+    CASE
+        WHEN age < 20 THEN 'Under 20' WHEN age BETWEEN 20 AND 29 THEN '20-29'
+        WHEN age BETWEEN 30 AND 39 THEN '30-39' WHEN age BETWEEN 40 AND 49 THEN '40-49'
+        ELSE '50 and above'
+    END age_group,
+    CASE
+        WHEN lifespan >= 12 AND total_sales > 5000 THEN 'VIP'
+        WHEN lifespan >= 12 AND total_sales <= 5000 THEN 'Regular'
+        ELSE 'New'
+    END customer_segment,
+    total_orders, total_sales, total_quantity, total_products, last_order_date,
+    DATEDIFF(month, last_order_date, GETDATE()) recency,
+    lifespan,
+    CASE WHEN total_orders = 0 THEN 0 ELSE total_sales / total_orders END AS avg_order_value,
+    CASE WHEN lifespan = 0 THEN total_sales ELSE total_sales / lifespan END avg_monthly_spend
+FROM customer_aggregation;
+GO
+
+-- Product Report View
+CREATE OR ALTER VIEW gold.report_products AS
+WITH base_query AS (
+    SELECT 
+        f.order_number, f.order_date, f.customer_key, f.sales_amount, f.quantity, f.product_key,
+        p.[name] product_name, p.category, p.subcategory, p.cost
+    FROM gold.fact_sales f
+    LEFT JOIN gold.dim_products p ON p.product_key = f.product_key
+    WHERE order_date IS NOT NULL
+), product_aggregations AS (
+    SELECT 
+        product_key, product_name, category, subcategory, cost,
+        DATEDIFF(MONTH, MIN(order_date), MAX(order_date)) AS lifespan,
+        MAX(order_date) AS last_sale_date,
+        COUNT(DISTINCT order_number) AS total_orders,
+        COUNT(DISTINCT customer_key) AS total_customers,
+        SUM(sales_amount) AS total_sales,
+        SUM(quantity) AS total_quantity,
+        ROUND(AVG(CAST(sales_amount AS FLOAT) / NULLIF(quantity, 0)), 1) AS avg_selling_price
+    FROM base_query
+    GROUP BY product_key, product_name, category, subcategory, cost
+)
+SELECT
+    product_key, product_name, category, subcategory, cost, last_sale_date,
+    DATEDIFF(MONTH, last_sale_date, GETDATE()) AS recency_in_months,
+    CASE
+        WHEN total_sales > 50000 THEN 'High-Performer'
+        WHEN total_sales >= 10000 THEN 'Mid-Range'
+        ELSE 'Low-Performer'
+    END AS product_segment,
+    lifespan, total_orders, total_sales, total_quantity, total_customers, avg_selling_price,
+    CASE WHEN total_orders = 0 THEN 0 ELSE total_sales / total_orders END AS avg_order_revenue,
+    CASE WHEN lifespan = 0 THEN total_sales ELSE total_sales / lifespan END AS avg_monthly_revenue
+FROM product_aggregations;
+GO
+```
+
 ## Gold Layer: Data Catalog
 
-### **1. fact_sales**
+### **Foundational Models**
 
-Records transactional sales data including order details, customer/product references, and financial metrics.
+#### 1. `fact_sales`
+Records transactional sales data.
 
-| Column Name | Data Type | Description | Example |
-| :--- | :--- | :--- | :--- |
-| `order_number` | NVARCHAR(50) | Unique sales order identifier | `SO43766` |
-| `product_key` | INT | Foreign key to `dim_products` | `48` |
-| `customer_key` | INT | Foreign key to `dim_customers` | `5519` |
-| `order_date` | DATE | Date order was placed | `2011-01-15` |
-| `shipping_date` | DATE | Date product was shipped | `2011-01-22` |
-| `due_date` | DATE | Expected delivery date | `2011-01-27` |
-| `sales_amount`| INT | Total revenue (quantity × price) | `3578` |
-| `quantity` | INT | Units purchased | `1` |
-| `price` | INT | Unit price | `3578` |
+| Column Name | Data Type | Description |
+| :--- | :--- | :--- |
+| `order_number` | NVARCHAR(50) | Unique sales order identifier |
+| `product_key` | INT | Foreign key to `dim_products` |
+| `customer_key`| INT | Foreign key to `dim_customers` |
+| `sales_amount`| INT | Total revenue (quantity × price) |
 
----
-
-### **2. dim_customers**
-
+#### 2. `dim_customers`
 Stores customer demographic and profile information.
 
-| Column Name | Data Type | Description | Example |
-| :--- | :--- | :--- | :--- |
-| `customer_key` | INT | Unique surrogate key | `1` |
-| `customer_id` | INT | Internal system ID | `11000` |
-| `customer_number`| NVARCHAR(50)| Public-facing ID | `AW00011000` |
-| `first_name` | NVARCHAR(50)| Customer's first name | `Jon` |
-| `last_name` | NVARCHAR(50)| Customer's last name | `Yang` |
-| `country` | NVARCHAR(50)| Country of residence | `Australia` |
-| `marital_status`| NVARCHAR(50)| `Single` or `Married` | `Married` |
-| `gender` | NVARCHAR(50)| `Male` or `Female` | `Male` |
-| `birthdate` | DATE | Date of birth | `1971-10-06` |
-| `create_date` | DATE | Record creation date | `2025-10-06` |
+| Column Name | Data Type | Description |
+| :--- | :--- | :--- |
+| `customer_key` | INT | Unique surrogate key |
+| `customer_number`| NVARCHAR(50)| Public-facing ID |
+| `first_name` | NVARCHAR(50)| Customer's first name |
+| `country` | NVARCHAR(50)| Country of residence |
 
----
+#### 3. `dim_products`
+Contains product details including categorization and cost.
 
-### **3. dim_products**
+| Column Name | Data Type | Description |
+| :--- | :--- | :--- |
+| `product_key` | INT | Unique surrogate key |
+| `product_number`| NVARCHAR(50)| SKU/product code |
+| `name` | NVARCHAR(255)| Full product name |
+| `category` | NVARCHAR(50)| High-level category |
 
-Contains product details including categorization, costs, and lifecycle.
+### **Report Models**
 
-| Column Name | Data Type | Description | Example |
-| :--- | :--- | :--- | :--- |
-| `product_key` | INT | Unique surrogate key | `1` |
-| `product_id` | INT | Internal system ID | `210` |
-| `product_number`| NVARCHAR(50)| SKU/product code | `FR-R928-58` |
-| `name` | NVARCHAR(255)| Full product name | `HL Road Frame - Black - 58` |
-| `category` | NVARCHAR(50)| High-level category | `Bikes`, `Clothing` |
-| `subcategory` | NVARCHAR(50)| Detailed subcategory | `Road Bikes`, `Jerseys`|
-| `product_line` | NVARCHAR(50)| Business line (`Road`, `Mountain`) | `Road` |
-| `cost` | INT | Manufacturing cost | `1059` |
-| `start_date` | DATE | Product launch date | `2003-07-01` |
+#### 4. `report_customers`
+Consolidates key customer metrics, segments, and KPIs.
 
-## Entity-Relationship Diagram
+| Column Name | Data Type | Description |
+| :--- | :--- | :--- |
+| `customer_key` | INT | Unique surrogate key |
+| `age_group` | VARCHAR | Customer's age bracket (e.g., '30-39') |
+| `customer_segment`| VARCHAR | Behavior segment (VIP, Regular, New) |
+| `total_orders`| INT | Total count of unique orders |
+| `total_sales` | INT | Sum of all sales for the customer |
+| `recency` | INT | Months since the customer's last order |
+| `lifespan` | INT | Months between first and last order |
+| `avg_order_value`| INT | Average sales amount per order |
+| `avg_monthly_spend`| INT | Average sales amount per month of lifespan|
+
+#### 5. `report_products`
+Consolidates key product performance metrics, segments, and KPIs.
+
+| Column Name | Data Type | Description |
+| :--- | :--- | :--- |
+| `product_key` | INT | Unique surrogate key |
+| `product_segment` | VARCHAR | Revenue segment (High-Performer, etc.) |
+| `recency_in_months`| INT | Months since product was last sold |
+| `lifespan` | INT | Months between first and last sale |
+| `total_orders`| INT | Total orders including this product |
+| `total_sales` | INT | Total revenue generated by this product |
+| `avg_order_revenue`| INT | Average revenue per order |
+| `avg_monthly_revenue`| INT | Average revenue per month of lifespan |
+
+## 7. Data Analysis and Reporting
+
+This section provides a collection of SQL queries that can be run against the Gold Layer to perform exploratory analysis, answer business questions, and generate reports.
+
+### 7.1 Exploratory Data Analysis
+
+#### Key Business Metrics
+```sql
+-- Generate a report that shows all key metrics of the business
+SELECT 'Total Sales' AS measure_name, SUM(sales_amount) AS measure_value FROM [gold].[fact_sales]
+UNION ALL
+SELECT 'Total Items Sold' AS measure_name, SUM(quantity) AS measure_value FROM [gold].[fact_sales]
+UNION ALL
+SELECT 'Average Selling Price' AS measure_name, AVG(price) AS measure_value FROM [gold].[fact_sales]
+UNION ALL
+SELECT 'Total Number of Orders' AS measure_name, COUNT(DISTINCT order_number) AS measure_value FROM [gold].[fact_sales]
+UNION ALL
+SELECT 'Total Number of Products' AS measure_name, COUNT(*) AS measure_value FROM [gold].[dim_products]
+UNION ALL
+SELECT 'Total Number of Customers' AS measure_name, COUNT(*) AS measure_value FROM [gold].[dim_customers]
+UNION ALL
+SELECT 'Total Customers with Orders' AS measure_name, COUNT(DISTINCT customer_key) AS measure_value FROM [gold].[fact_sales];
+
+-- Find the date of the first and last order
+SELECT MIN(order_date) AS first_date, MAX(order_date) AS last_date FROM [gold].[fact_sales];
+```
+### 7.2 Answering Business Questions
+
+#### Top 5 Products by Revenue
+```sql
+-- What are the 5 products generating the highest revenue?
+SELECT TOP 5
+	p.[name] AS product_name,
+	SUM(fs.sales_amount) AS total_revenue
+FROM gold.fact_sales fs
+JOIN gold.dim_products p ON fs.product_key = p.product_key
+GROUP BY p.[name]
+ORDER BY total_revenue DESC;
+```
+
+#### Total Revenue by Product Category
+```sql
+-- What is the total revenue generated for each category?
+SELECT 
+	p.category, 
+	SUM(fs.sales_amount) AS total_revenue 
+FROM gold.dim_products p
+JOIN gold.fact_sales fs ON fs.product_key = p.product_key
+GROUP BY p.category
+ORDER BY total_revenue DESC;
+```
+
+#### Total Customers by Country
+```sql
+-- Find total customers by country
+SELECT country, COUNT(*) AS total_customers 
+FROM gold.dim_customers 
+GROUP BY country 
+ORDER BY total_customers DESC;
+```
+### 7.3 Advanced Analysis
+#### Monthly Sales Trend
+```sql
+-- This gets the total sales for each month in a year
+SELECT 
+	YEAR(order_date) AS [year],
+	MONTH(order_date) AS [month],
+	SUM(sales_amount) AS total_revenue
+FROM gold.fact_sales
+WHERE order_date IS NOT NULL
+GROUP BY YEAR(order_date), MONTH(order_date)
+ORDER BY YEAR(order_date), MONTH(order_date);
+```
+#### Cumulative Revenue (Running Total)
+```sql
+-- This gets the running total of sales over time
+SELECT 
+	[year], [month], total_revenue,
+	SUM(total_revenue) OVER(PARTITION BY [year] ORDER BY [month]) AS cumulative_revenue
+FROM (
+	SELECT
+		YEAR(order_date) AS [year],
+		MONTH(order_date) AS [month],
+		SUM(sales_amount) AS total_revenue
+	FROM gold.fact_sales
+	WHERE order_date IS NOT NULL
+	GROUP BY YEAR(order_date), MONTH(order_date)
+) t;
+```
+
+#### Year-Over-Year Product Performance
+```sql
+-- Analyzing the yearly performance of products by comparing their sales to the previous year's sales
+WITH yearly_product_sale AS (
+	SELECT 
+		YEAR(order_date) AS order_year,
+		p.[name] AS product_name,
+		SUM(f.sales_amount) AS current_sales
+	FROM gold.fact_sales f
+	JOIN gold.dim_products p ON f.product_key = p.product_key
+	GROUP BY YEAR(order_date), p.[name]
+)
+SELECT 
+	order_year, product_name, current_sales,
+	LAG(current_sales, 1, 0) OVER(PARTITION BY product_name ORDER BY order_year) AS previous_year_sales
+FROM yearly_product_sale
+ORDER BY product_name, order_year;
+```
+
+#### Sales Contribution by Category
+```sql
+-- Which categories contribute the most to overall sales?
+SELECT 
+	p.category,
+	SUM(f.sales_amount) AS total_sales,
+	FORMAT((SUM(CAST(f.sales_amount AS BIGINT)) * 100.0) / (SELECT SUM(CAST(sales_amount AS BIGINT)) FROM gold.fact_sales), 'N2') + ' %' AS percentage_of_total
+FROM gold.fact_sales f
+JOIN gold.dim_products p ON p.product_key = f.product_key
+GROUP BY p.category
+ORDER BY total_sales DESC;
+```
+#### Customer Spending Segments
+```sql
+-- Group customers into three segments based on their spending behavior
+SELECT 
+	spending_behaviour,
+	COUNT(customer_key) AS total_customers
+FROM (
+	SELECT 
+		customer_key,
+		CASE
+			WHEN customer_life_span >= 12 AND total_spent > 5000 THEN 'VIP'
+			WHEN customer_life_span >= 12 AND total_spent <= 5000 THEN 'Regular'
+			ELSE 'New'
+		END AS spending_behaviour
+	FROM (
+		SELECT 
+			c.customer_key,
+			SUM(f.sales_amount) AS total_spent,
+			DATEDIFF(month, MIN(f.order_date), MAX(f.order_date)) AS customer_life_span
+		FROM gold.dim_customers c
+		JOIN gold.fact_sales f ON f.customer_key = c.customer_id
+		GROUP BY c.customer_key
+	) t
+) u
+GROUP BY spending_behaviour;
+```
+## 8. Entity-Relationship Diagram
+
+This diagram illustrates the relationships between the core fact and dimension tables in the Gold Layer.
 
 ```mermaid
 erDiagram
@@ -425,10 +673,7 @@ erDiagram
         INT product_key FK
         INT customer_key FK
         DATE order_date
-        DATE shipping_date
         INT sales_amount
-        INT quantity
-        INT price
     }
 
     dim_customers {
@@ -436,8 +681,6 @@ erDiagram
         INT customer_id
         NVARCHAR(50) first_name
         NVARCHAR(50) country
-        NVARCHAR(50) gender
-        DATE birthdate
     }
 
     dim_products {
@@ -445,9 +688,5 @@ erDiagram
         INT product_id
         NVARCHAR(255) name
         NVARCHAR(50) category
-        NVARCHAR(50) subcategory
-        INT cost
     }
-```
-
 
